@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import "./interfaces/v0.8/IVaultPriceFeed.sol";
-import "./interfaces/v0.8/IWitnetPriceRouter.sol";
 import "../oracle/interfaces/v0.8/ISecondaryPriceFeed.sol";
+import "@api3/contracts/v0.8/interfaces/IProxy.sol";
 
 pragma solidity ^0.8.0;
 
@@ -17,16 +17,15 @@ contract VaultPriceFeed is IVaultPriceFeed {
 
     address public gov;
 
-    IWitnetPriceRouter public immutable witnetPriceRouter; // kava 0xD39D4d972C7E166856c4eb29E54D3548B4597F53
-
     bool public isSecondaryPriceEnabled = true;
     bool public favorPrimaryPrice;
     uint256 public maxStrictPriceDeviation;
     address public secondaryPriceFeed;
     uint256 public spreadThresholdBasisPoints = 30;
+    uint256 public expireTimeForPriceFeed = 1 days;
 
 
-    mapping(address => bytes4) public priceFeedKeys;
+    mapping(address => address) public priceFeedProxies;
     mapping(address => uint256) public priceDecimals;
     mapping(address => uint256) public spreadBasisPoints;
     mapping(address => bool) public strictStableTokens;
@@ -40,10 +39,8 @@ contract VaultPriceFeed is IVaultPriceFeed {
         _;
     }
 
-    constructor(address _witnetPriceRouter)  {
-        require(_witnetPriceRouter != address(0), "VaultPriceFeed: address(0)");
+    constructor()  {
         gov = msg.sender;
-        witnetPriceRouter = IWitnetPriceRouter(_witnetPriceRouter);
     }
 
     function setGov(address _gov) external onlyGov {
@@ -65,6 +62,11 @@ contract VaultPriceFeed is IVaultPriceFeed {
 
     function setIsSecondaryPriceEnabled(bool _isEnabled) external override onlyGov {
         isSecondaryPriceEnabled = _isEnabled;
+    }
+
+    function setExpireTimeForPriceFeed(uint256 _expireTimeForPriceFeed) external override onlyGov {
+        require(_expireTimeForPriceFeed >= 1 minutes,"invalid _expireTimeForPriceFeed");
+        expireTimeForPriceFeed = _expireTimeForPriceFeed;
     }
 
     function setSecondaryPriceFeed(address _secondaryPriceFeed) external onlyGov {
@@ -90,12 +92,12 @@ contract VaultPriceFeed is IVaultPriceFeed {
 
     function setTokenConfig(
         address _token,
+        address _priceFeedProxy,
         uint256 _priceDecimals,
-        bytes4 _priceFeedKey,
         bool _isStrictStable
     ) external override onlyGov {
+        priceFeedProxies[_token] = _priceFeedProxy;
         priceDecimals[_token] = _priceDecimals;
-        priceFeedKeys[_token] = _priceFeedKey;
         strictStableTokens[_token] = _isStrictStable;
     }
 
@@ -160,20 +162,15 @@ contract VaultPriceFeed is IVaultPriceFeed {
     }
 
     function getLatestPrimaryPrice(address _token) public override view returns (uint256) {
-        return _getWitnetPrice(_token);
+        return _getApi3Price(_token);
     }   
 
     function getPrimaryPrice(address _token, bool /*_maximise*/) public view override returns (uint256) {
-        return _getWitnetPrice(_token) * PRICE_PRECISION / (10 ** priceDecimals[_token]);
+        uint256 price = _getApi3Price(_token);
+
+        uint256 _priceDecimals = priceDecimals[_token];
+        return (price * PRICE_PRECISION) / 10 ** _priceDecimals;
     }
-
-    function _getWitnetPrice(address _token) private view returns (uint256) {
-        require(priceFeedKeys[_token].length > 0, "VaultPriceFeed: invalid price feed key");
-
-        ( int256 lastPrice,,) = witnetPriceRouter.valueFor(priceFeedKeys[_token]);
-
-        return uint256(lastPrice);
-    }   
 
     function getSecondaryPrice(
         address _token,
@@ -186,4 +183,15 @@ contract VaultPriceFeed is IVaultPriceFeed {
         return ISecondaryPriceFeed(secondaryPriceFeed).getPrice(_token, _referencePrice, _maximise);
     }
 
+    function _getApi3Price(address _token) private view  returns (uint256) {
+        address proxy = priceFeedProxies[_token];
+        require(proxy != address(0), "VaultPriceFeed: invalid price feed proxy");
+        (int224 price, uint256 timestamp) = IProxy(proxy).read();
+        require(price > 0, "VaultPriceFeed: price not positive");
+        require(
+            timestamp + expireTimeForPriceFeed > block.timestamp,
+            "VaultPriceFeed: expired"
+        );
+        return uint256(uint224(price));
+    }
 }

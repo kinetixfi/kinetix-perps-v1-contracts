@@ -18,6 +18,8 @@ interface IVaultPriceFeed {
 
     function setIsSecondaryPriceEnabled(bool _isEnabled) external;
 
+    function setExpireTimeForPriceFeed(uint256 _expireTimeForPriceFeed) external;
+
     function setSpreadBasisPoints(address _token, uint256 _spreadBasisPoints)
         external;
 
@@ -43,8 +45,8 @@ interface IVaultPriceFeed {
 
     function setTokenConfig(
         address _token,
+        address _priceFeedProxy,
         uint256 _priceDecimals,
-        bytes4 _priceFeedKey,
         bool _isStrictStable
     ) external;
 
